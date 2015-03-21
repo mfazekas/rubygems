@@ -958,7 +958,7 @@ class Gem::Specification < Gem::BasicSpecification
   # Search through all unresolved deps and sub-dependencies and return
   # specs that contain the file matching +path+.
 
-  $traverse_implementation = :tenderlove # :original
+  $traverse_implementation = :tenderlove # :original, :original_fixed
 
   def self.find_in_unresolved_tree path
     self.send("find_in_unresolved_tree_#{$traverse_implementation}",path)
@@ -998,6 +998,48 @@ class Gem::Specification < Gem::BasicSpecification
 
     []
   end
+
+  def self.find_in_unresolved_tree_original_fixed path
+    specs = unresolved_deps.values.map { |dep| dep.to_specs }.flatten
+
+    specs.reverse_each do |spec|
+      trails = []
+      spec.traverse_fixed do |from_spec, dep, to_spec, trail|
+        if to_spec.conflicts.empty?
+          trails << trail if to_spec.contains_requirable_file? path
+        else
+          :next
+        end
+      end
+
+      next if trails.empty?
+
+      return trails.map(&:reverse).sort.last.reverse
+    end
+
+    []
+  end
+
+  def self.find_in_unresolved_tree_mfazekas path
+    specs = unresolved_deps.values.map { |dep| dep.to_specs }.flatten
+
+    visited = {}
+    specs.reverse_each do |spec|
+      spec.traverse_mfazekas do |from_spec, dep, to_spec, trail|
+        if to_spec.conflicts.empty?
+          if to_spec.contains_requirable_file? path
+            return trail
+          end
+        else
+          :next
+        end
+      end
+
+    end
+
+    []
+  end
+
   ##
   # Special loader for YAML files.  When a Specification object is loaded
   # from a YAML file, it bypasses the normal Ruby object initialization
@@ -2524,6 +2566,37 @@ class Gem::Specification < Gem::BasicSpecification
         spec_name = dep_spec.name
         dep_spec.traverse(trail, &block) unless
           trail.any? { |s| s.name == spec_name }
+      end
+    end
+  end
+
+  def traverse_mfazekas trail = [], visited = {}, &block
+    trail = [self] + trail
+    dependencies.each do |dep|
+      dep.to_specs.reverse_each do |dep_spec|
+        next if visited.has_key?(dep_spec)
+        visited[dep_spec] = true
+        result = block[self, dep, dep_spec, [dep_spec] + trail]
+        unless result == :next
+          spec_name = dep_spec.name
+          dep_spec.traverse_mfazekas(trail, visited, &block) unless
+            trail.any? { |s| s.name == spec_name }
+        end
+      end
+    end
+  end
+
+  def traverse_fixed trail = [], &block
+    trail = [self] + trail
+    dependencies.each do |dep|
+      next unless dep.runtime?
+      dep.to_specs.each do |dep_spec|
+        result = block[self, dep, dep_spec, [dep_spec] + trail]
+        unless result == :next
+          spec_name = dep_spec.name
+          dep_spec.traverse_fixed(trail, &block) unless
+            trail.any? { |s| s.name == spec_name }
+        end
       end
     end
   end

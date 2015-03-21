@@ -1,4 +1,3 @@
-require 'byebug'
 require 'rubygems/test_case'
 require 'pathname'
 require 'stringio'
@@ -178,7 +177,9 @@ end
     {
       #correct: %w(a-1 b-2 c-2),
       tenderlove: %w(a-1 b-2 c-1),
-      original: %w(a-1 b-2 c-1)
+      original: %w(a-1 b-2 c-1),
+      original_fixed: %w(a-1 b-2 c-2),
+      mfazekas: %w(a-1 b-2 c-2)
     }) do |expected|
     save_loaded_features do
       a1 = new_spec "a", "1", "b" => "> 0"
@@ -201,7 +202,9 @@ end
     {
       #correct: %w(a-1 b-2 c-2 d-2),
       tenderlove: %w(a-1 d-2),
-      original: %w(a-1 b-2 c-1 d-1)
+      original: %w(a-1 b-2 c-1 d-1),
+      original_fixed: %w(a-1 b-2 c-2 d-2),
+      mfazekas: %w(a-1 b-2 c-2 d-2)
     }) do |expected|
     save_loaded_features do
       a1 = new_spec "a", "1", "b" => "> 0"
@@ -226,7 +229,9 @@ end
     {
       #correct: %w(a-1 b-2 c-2 d-2),
       tenderlove: %w(a-1 d-3),
-      original: %w(a-1 b-2 c-1 d-1)
+      original: %w(a-1 b-2 c-1 d-1),
+      original_fixed: %w(a-1 b-2 c-2 d-2),
+      mfazekas: %w(a-1 b-2 c-2 d-2),
     }) do |expected|
     save_loaded_features do
       a1 = new_spec "a", "1", "b" => "> 0"
@@ -252,7 +257,9 @@ end
     {
       #correct: %w(a-1 b-2 c-2 d-2),
       tenderlove: %w(a-1 anti_d-1),
-      original: %w(a-1 b-2 c-1 d-1)
+      original: %w(a-1 b-2 c-1 d-1),
+      original_fixed: %w(a-1 b-2 c-2 d-2),
+      mfazekas: %w(a-1 b-2 c-2 d-2)
     }) do |expected|
     save_loaded_features do
       a1 = new_spec "a", "1", "b" => "> 0"
@@ -279,7 +286,9 @@ end
     {
       #correct: %w(0-1 A-2 b-2 c-2),
       tenderlove: %w(0-1 A-2 b-1 c-1),
-      original: Gem::LoadError.new('Unable to activate A-2, because c-1 conflicts with c (>= 2)')
+      original: Gem::LoadError.new('Unable to activate A-2, because c-1 conflicts with c (>= 2)'),
+      original_fixed: %w(0-1 A-2 b-2 c-2),
+      mfazekas: %w(0-1 A-2 b-2 c-2)
     }) do |expected|
     save_loaded_features do
       base = new_spec "0", "1", "A" => ">= 1"
@@ -301,6 +310,37 @@ end
 
       assert_equal expected, loaded_spec_names
       assert_equal [], unresolved_names
+    end
+  end
+
+  impl_test("test_notfound_performance",
+    {
+      #correct: 0.0,
+      tenderlove: 0.01,
+      original: 20.4,
+      original_fixed: 20.6,
+      mfazekas: 0.09
+    }) do |expected|
+    save_loaded_features do
+      num_of_pkg = 7
+      num_of_version_per_pkg = 3
+      packages = (0..num_of_pkg).map do |pkgi|
+        (0..num_of_version_per_pkg).map do |pkg_version|
+          deps = Hash[(pkgi..num_of_pkg).map { |deppkgi| ["pkg#{deppkgi}", ">= 0"] }]
+          new_spec "pkg#{pkgi}", pkg_version.to_s, deps
+        end
+      end
+      base = new_spec "pkg_base", "1", {"pkg0" => ">= 0"}
+
+      Gem::Specification.reset
+      install_specs base,*packages.flatten
+      base.activate
+
+      require 'benchmark'
+      tms = Benchmark.measure {
+        assert_raises(LoadError) { require 'no_such_file_foo' }
+      }
+      assert_in_delta expected, tms.total, [0.1,expected*0.4].max
     end
   end
 
