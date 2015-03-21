@@ -958,9 +958,14 @@ class Gem::Specification < Gem::BasicSpecification
   # Search through all unresolved deps and sub-dependencies and return
   # specs that contain the file matching +path+.
 
-  def self.find_in_unresolved_tree path
-    specs = unresolved_deps.values.map { |dep| dep.to_specs }.flatten
+  $traverse_implementation = :tenderlove # :original
 
+  def self.find_in_unresolved_tree path
+    self.send("find_in_unresolved_tree_#{$traverse_implementation}",path)
+  end
+
+  def self.find_in_unresolved_tree_tenderlove path
+    specs = unresolved_deps.values.map { |dep| dep.to_specs }.flatten
     specs.reverse_each do |spec|
       trails = []
       Gem::Specification.traverse(spec) do |to_spec, trail|
@@ -976,6 +981,23 @@ class Gem::Specification < Gem::BasicSpecification
     []
   end
 
+  def self.find_in_unresolved_tree_original path
+    specs = unresolved_deps.values.map { |dep| dep.to_specs }.flatten
+
+    specs.reverse_each do |spec|
+      trails = []
+      spec.traverse do |from_spec, dep, to_spec, trail|
+        next unless to_spec.conflicts.empty?
+        trails << trail if to_spec.contains_requirable_file? path
+      end
+
+      next if trails.empty?
+
+      return trails.map(&:reverse).sort.first.reverse
+    end
+
+    []
+  end
   ##
   # Special loader for YAML files.  When a Specification object is loaded
   # from a YAML file, it bypasses the normal Ruby object initialization

@@ -1,3 +1,4 @@
+require 'byebug'
 require 'rubygems/test_case'
 require 'pathname'
 require 'stringio'
@@ -146,6 +147,160 @@ end
         assert_raises(LoadError) { require 'no_such_file_foo' }
       }
       assert_operator tms.total, :<=, 10
+    end
+  end
+
+  def self.impl_test(name,impl_expeced_hash,&block)
+    impl_expeced_hash.each do |impl,expected|
+      define_method("#{name}_#{impl}") do
+        begin
+          orig_impl = $traverse_implementation
+          $traverse_implementation = impl
+          if expected.is_a? Exception
+            exception = nil
+            begin
+              self.instance_exec(nil,&block)
+            rescue expected.class => e
+              exception = e
+            end
+            assert_equal expected.message, exception.message
+          else
+            self.instance_exec(expected,&block)
+          end
+        ensure
+          $traverse_implementation = orig_impl
+        end
+      end
+    end
+  end
+
+  impl_test("test_require_should_prefer_latest_gem_level1",
+    {
+      #correct: %w(a-1 b-2 c-2),
+      tenderlove: %w(a-1 b-2 c-1),
+      original: %w(a-1 b-2 c-1)
+    }) do |expected|
+    save_loaded_features do
+      a1 = new_spec "a", "1", "b" => "> 0"
+      b1 = new_spec "b", "1", "c" => ">= 0" # unresolved
+      b2 = new_spec "b", "2", "c" => ">= 0"
+      c1 = new_spec "c", "1", nil, "lib/c.rb"  # 1st level
+      c2 = new_spec "c", "2", nil, "lib/c.rb"
+
+      install_specs a1, b1, b2, c1, c2
+
+      a1.activate
+
+      require "c"
+
+      assert_equal expected, loaded_spec_names
+    end
+  end
+
+  impl_test("test_require_should_prefer_latest_gem_level2",
+    {
+      #correct: %w(a-1 b-2 c-2 d-2),
+      tenderlove: %w(a-1 d-2),
+      original: %w(a-1 b-2 c-1 d-1)
+    }) do |expected|
+    save_loaded_features do
+      a1 = new_spec "a", "1", "b" => "> 0"
+      b1 = new_spec "b", "1", "c" => ">= 0" # unresolved
+      b2 = new_spec "b", "2", "c" => ">= 0"
+      c1 = new_spec "c", "1", "d" => ">= 0"  # 1st level
+      c2 = new_spec "c", "2", "d" => ">= 0"
+      d1 = new_spec "d", "1", nil, "lib/d.rb" # 2nd level
+      d2 = new_spec "d", "2", nil, "lib/d.rb"
+
+      install_specs a1, b1, b2, c1, c2, d1, d2
+
+      a1.activate
+
+      require "d"
+
+      assert_equal expected, loaded_spec_names
+    end
+  end
+
+  impl_test("test_require_finds_in_2nd_level_indirect",
+    {
+      #correct: %w(a-1 b-2 c-2 d-2),
+      tenderlove: %w(a-1 d-3),
+      original: %w(a-1 b-2 c-1 d-1)
+    }) do |expected|
+    save_loaded_features do
+      a1 = new_spec "a", "1", "b" => "> 0"
+      b1 = new_spec "b", "1", "c" => ">= 0" # unresolved
+      b2 = new_spec "b", "2", "c" => ">= 0"
+      c1 = new_spec "c", "1", "d" => "<= 2" # 1st level
+      c2 = new_spec "c", "2", "d" => "<= 2"
+      d1 = new_spec "d", "1", nil, "lib/d.rb" # 2nd level
+      d2 = new_spec "d", "2", nil, "lib/d.rb"
+      d3 = new_spec "d", "3", nil, "lib/d.rb"
+
+      install_specs a1, b1, b2, c1, c2, d1, d2, d3
+
+      a1.activate
+
+      require "d"
+
+      assert_equal expected, loaded_spec_names
+    end
+  end
+
+  impl_test("test_require_should_prefer_reachable_gems",
+    {
+      #correct: %w(a-1 b-2 c-2 d-2),
+      tenderlove: %w(a-1 anti_d-1),
+      original: %w(a-1 b-2 c-1 d-1)
+    }) do |expected|
+    save_loaded_features do
+      a1 = new_spec "a", "1", "b" => "> 0"
+      b1 = new_spec "b", "1", "c" => ">= 0" # unresolved
+      b2 = new_spec "b", "2", "c" => ">= 0"
+      c1 = new_spec "c", "1", "d" => "<= 2" # 1st level
+      c2 = new_spec "c", "2", "d" => "<= 2"
+      d1 = new_spec "d", "1", nil, "lib/d.rb" # 2nd level
+      d2 = new_spec "d", "2", nil, "lib/d.rb"
+      d3 = new_spec "d", "3", nil, "lib/d.rb"
+      e  = new_spec "anti_d", "1", nil, "lib/d.rb"
+
+      install_specs a1, b1, b2, c1, c2, d1, d2, d3, e
+
+      a1.activate
+
+      require "d"
+
+      assert_equal expected, loaded_spec_names
+    end
+  end
+
+  impl_test("test_require_should_not_conflict",
+    {
+      #correct: %w(0-1 A-2 b-2 c-2),
+      tenderlove: %w(0-1 A-2 b-1 c-1),
+      original: Gem::LoadError.new('Unable to activate A-2, because c-1 conflicts with c (>= 2)')
+    }) do |expected|
+    save_loaded_features do
+      base = new_spec "0", "1", "A" => ">= 1"
+      a1 = new_spec "A", "1", {"c" => ">= 2", "b" => "> 0"}, "lib/a.rb"
+      a2 = new_spec "A", "2", {"c" => ">= 2", "b" => "> 0"}, "lib/a.rb"
+      b1 = new_spec "b", "1", {"c" => "= 1"}, "lib/d.rb"
+      b2 = new_spec "b", "2", {"c" => "= 2"}, "lib/d.rb"
+      c1 = new_spec "c", "1", {}, "lib/c.rb"
+      c2 = new_spec "c", "2", {}, "lib/c.rb"
+      c3 = new_spec "c", "3", {}, "lib/c.rb"
+
+      install_specs base, a1, a2, b1, b2, c1, c2, c3
+
+      base.activate
+      assert_equal %w(0-1), loaded_spec_names
+      assert_equal ["A (>= 1)"], unresolved_names
+
+      require "d"
+
+      assert_equal expected, loaded_spec_names
+      assert_equal [], unresolved_names
     end
   end
 
