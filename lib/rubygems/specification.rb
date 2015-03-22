@@ -1026,12 +1026,12 @@ class Gem::Specification < Gem::BasicSpecification
     visited = {}
     specs.reverse_each do |spec|
       spec.traverse_mfazekas do |from_spec, dep, to_spec, trail|
-        if to_spec.conflicts.empty?
-          if to_spec.contains_requirable_file? path
-            return trail
-          end
-        else
+        if to_spec.has_conflicts? || to_spec.conficts_when_loaded_with?(trail)
           :next
+        else
+          if to_spec.contains_requirable_file? path
+            return trail.reverse
+          end
         end
       end
 
@@ -1640,6 +1640,15 @@ class Gem::Specification < Gem::BasicSpecification
         false
       end
     }
+  end
+
+  ##
+  # return true if there will be conflicts when loading the list of gems
+  def conficts_when_loaded_with?(list_of_specs) # !nodoc
+    result = list_of_specs.any? { |spec|
+      spec.dependencies.any? { |dep| dep.runtime? && (dep.name == name) && !satisfies_requirement?(dep) }
+    }
+    result
   end
 
   ##
@@ -2571,18 +2580,27 @@ class Gem::Specification < Gem::BasicSpecification
   end
 
   def traverse_mfazekas trail = [], visited = {}, &block
-    trail = [self] + trail
-    dependencies.each do |dep|
-      dep.to_specs.reverse_each do |dep_spec|
-        next if visited.has_key?(dep_spec)
-        visited[dep_spec] = true
-        result = block[self, dep, dep_spec, [dep_spec] + trail]
-        unless result == :next
-          spec_name = dep_spec.name
-          dep_spec.traverse_mfazekas(trail, visited, &block) unless
-            trail.any? { |s| s.name == spec_name }
+    trail.push(self)
+    begin
+      dependencies.each do |dep|
+        dep.to_specs.reverse_each do |dep_spec|
+          next if visited.has_key?(dep_spec)
+          visited[dep_spec] = true
+          trail.push(dep_spec)
+          begin
+            result = block[self, dep, dep_spec, trail]
+          ensure
+            trail.pop
+          end
+          unless result == :next
+            spec_name = dep_spec.name
+            dep_spec.traverse_mfazekas(trail, visited, &block) unless
+              trail.any? { |s| s.name == spec_name }
+          end
         end
       end
+    ensure
+      trail.pop
     end
   end
 

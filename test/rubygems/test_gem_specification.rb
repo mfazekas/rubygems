@@ -313,20 +313,81 @@ end
     end
   end
 
-  impl_test("test_notfound_performance",
+  impl_test("test_inner_clonflict_in_indirect_gems",
+      {
+        #correct: %w(a-1 b-2 c-3 d-2),
+        mfazekas: %w(a-1 b-2 c-3 d-2),
+        original: %w(a-1 b-2 c-1 d-1),
+        original_fixed: %w(a-1 b-2 d-2),
+        tenderlove: %w(a-1 b-2 d-1)
+      }) do |expected|
+      save_loaded_features do
+        a1 = new_spec "a", "1", "b" => "> 0"
+        b1 = new_spec "b", "1", "c" => ">= 1" # unresolved
+        b2 = new_spec "b", "2", "c" => ">= 1", "d" => "< 3"
+        c1 = new_spec "c", "1", "d" => "<= 2" # 1st level
+        c2 = new_spec "c", "2", "d" => "<= 2"
+        c3 = new_spec "c", "3", "d" => "<= 3"
+        d1 = new_spec "d", "1", nil, "lib/d.rb" # 2nd level
+        d2 = new_spec "d", "2", nil, "lib/d.rb"
+        d3 = new_spec "d", "3", nil, "lib/d.rb"
+
+        install_specs a1, b1, b2, c1, c2, c3, d1, d2, d3
+
+        a1.activate
+
+        require "d"
+
+        assert_equal expected, loaded_spec_names
+      end
+    end
+
+    impl_test("test_inner_clonflict_in_indirect_gems_reversed",
+        {
+          #correct: %w(a-1 b-2 d-2 xc-3),
+          mfazekas: %w(a-1 b-2 d-2 xc-3),
+          original: %w(a-1 b-2 d-1),
+          original_fixed: Gem::LoadError.new('Unable to activate b-2, because d-3 conflicts with d (< 3)'),
+          tenderlove: %w(a-1 b-2 d-1)
+        }) do |expected|
+        save_loaded_features do
+          a1 = new_spec "a", "1", "b" => "> 0"
+          b1 = new_spec "b", "1", "xc" => ">= 1" # unresolved
+          b2 = new_spec "b", "2", "xc" => ">= 1", "d" => "< 3"
+          c1 = new_spec "xc", "1", "d" => "<= 3" # 1st level
+          c2 = new_spec "xc", "2", "d" => "<= 2"
+          c3 = new_spec "xc", "3", "d" => "<= 3"
+          d1 = new_spec "d", "1", nil, "lib/d.rb" # 2nd level
+          d2 = new_spec "d", "2", nil, "lib/d.rb"
+          d3 = new_spec "d", "3", nil, "lib/d.rb"
+
+          install_specs a1, b1, b2, c1, c2, c3, d1, d2, d3
+
+          a1.activate
+
+          require "d"
+
+          assert_equal expected, loaded_spec_names
+        end
+      end
+
+  impl_test("test_notfound_performance_linear",
     {
       #correct: 0.0,
-      tenderlove: 0.01,
-      original: 20.4,
-      original_fixed: 20.6,
-      mfazekas: 0.09
+      tenderlove: 7.66,
+      original: 7.75,
+      #original_fixed: 20.6,
+      mfazekas: 8.08
     }) do |expected|
     save_loaded_features do
-      num_of_pkg = 7
-      num_of_version_per_pkg = 3
-      packages = (0..num_of_pkg).map do |pkgi|
-        (0..num_of_version_per_pkg).map do |pkg_version|
-          deps = Hash[(pkgi..num_of_pkg).map { |deppkgi| ["pkg#{deppkgi}", ">= 0"] }]
+      num_of_pkg = 100
+      num_of_version_per_pkg = 1
+      num_of_deps_per_pkg = 1
+      num_of_includes = 2000
+      packages = (0...num_of_pkg).map do |pkgi|
+        (0...num_of_version_per_pkg).map do |pkg_version|
+          max_dep_ver = [num_of_pkg,pkgi+1+num_of_deps_per_pkg].min
+          deps = Hash[(pkgi+1...max_dep_ver).map { |deppkgi| ["pkg#{deppkgi}", ">= 0"] }]
           new_spec "pkg#{pkgi}", pkg_version.to_s, deps
         end
       end
@@ -338,7 +399,57 @@ end
 
       require 'benchmark'
       tms = Benchmark.measure {
-        assert_raises(LoadError) { require 'no_such_file_foo' }
+        count = 0
+        (0...num_of_includes).each do |i|
+          begin
+            require "no_such_file_foo#{i}" 
+          rescue LoadError
+            count += 1
+          end
+        end
+        assert_equal num_of_includes, count
+      }
+      assert_in_delta expected, tms.total, [0.1,expected*0.4].max
+    end
+  end
+
+  impl_test("test_notfound_performance",
+    {
+      #correct: 0.0,
+      tenderlove: 0.01,
+      original: 20.4,
+      original_fixed: 20.6,
+      mfazekas: 0.01
+    }) do |expected|
+    save_loaded_features do
+      num_of_pkg = 9
+      num_of_version_per_pkg = 4
+      num_of_deps_per_pkg = 10
+      num_of_includes = 1
+      packages = (0...num_of_pkg).map do |pkgi|
+        (0...num_of_version_per_pkg).map do |pkg_version|
+          max_dep_ver = [num_of_pkg,pkgi+1+num_of_deps_per_pkg].min
+          deps = Hash[(pkgi+1...max_dep_ver).map { |deppkgi| ["pkg#{deppkgi}", ">= 0"] }]
+          new_spec "pkg#{pkgi}", pkg_version.to_s, deps
+        end
+      end
+      base = new_spec "pkg_base", "1", {"pkg0" => ">= 0"}
+
+      Gem::Specification.reset
+      install_specs base,*packages.flatten
+      base.activate
+
+      require 'benchmark'
+      tms = Benchmark.measure {
+        count = 0
+        (0...num_of_includes).each do |i|
+          begin
+            require "no_such_file_foo#{i}"
+          rescue LoadError
+            count += 1
+          end
+        end
+        assert_equal num_of_includes, count
       }
       assert_in_delta expected, tms.total, [0.1,expected*0.4].max
     end
